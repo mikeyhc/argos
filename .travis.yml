@@ -4,6 +4,7 @@ otp_release:
     - R16B03
     - 18.1
 before_script:
-    - rebar3 get-deps
+    - wget https://s3.amazonaws.com/rebar3/rebar3 && chmod +x rebar3
+    - ./rebar3 get-deps
 script:
-    - rebar3 build && rebar3 eunit
+    - ./rebar3 build && ./rebar3 eunit
