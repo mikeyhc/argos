@@ -1,0 +1,7 @@
+@author mikeyhc <mikeyhc@atmosia.net>
+@version 0.1.0
+@title Welcome to Argos monitor and reporter
+@doc Argos is a monitoring and reporting tool designed for handling
+uncertain and dynamic situations. Instead of comparing metrics to
+hard limits (don't worry, it can still do this), it focuses on comparing
+services against each other to find aberrant behaviour.

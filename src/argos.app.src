@@ -1,0 +1,21 @@
+{application, argos,
+ [{description, "An OTP application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, { argos_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    lager,
+    cowboy,
+    mnesia,
+    inets,
+    crypto
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, []},
+  {links, []}
+ ]}.
