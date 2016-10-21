@@ -41,6 +41,10 @@
 
 -type hex() :: 48..57 | 97..102.
 
+-type httpc_body() :: string() | binary().
+-type httpc_response() :: {httpc:status_line(), httpc:headers(), httpc_body()}
+                        | {httpc:status_code(), httpc:body()}.
+
 %%====================================================================
 %% API
 %%====================================================================
@@ -84,9 +88,7 @@ init([Hostname]) -> {ok, #state{hostname=Hostname}}.
 
 %% @hidden
 terminate(_Reason, #state{pending=Pending}) ->
-    F = fun({Callee, _Rid}) ->
-                Callee ! {graphite, {error, listener_terminate}}
-        end,
+    F = fun({Pid, _Rid, Uid}) -> send_error(Pid, Uid, listener_terminate) end,
     lists:foreach(F, Pending).
 
 %% @hidden
@@ -103,11 +105,54 @@ handle_cast({request, Callee, Uid, Target, Options}, S) ->
 
 
 %% @hidden
-handle_info(_Message, State) -> {noreply, State}.
+handle_info({http, {ID, Reply}}, State) ->
+    NS = case find_pending(ID, State#state.pending) of
+             not_found ->
+                 lager:warning("httpc reply ~p had no caller", [ID]),
+                 State;
+             {Found, Rest} ->
+                 handle_response(Found, Reply),
+                 State#state{pending=Rest}
+         end,
+    {noreply, NS}.
 
 %%====================================================================
 %% Internal Functions
 %%====================================================================
+
+%% @doc check a response is valid, parse it and send it back to the
+%% requesting process
+%% @todo handle the status code prior to the content type
+%% @private
+%% @end
+-spec handle_response(pending_request(), httpc_response()) -> any().
+handle_response({Pid, Uid, _}, {Status, Body}) ->
+    process_response(Pid, Uid, Status, Body);
+handle_response({Pid, Uid, _}, {{_Version, Code, _Reason}, Headers, Body}) ->
+    Process = fun() -> process_response(Pid, Uid, Code, Body) end,
+    case proplists:get_value(Headers, "content-type") of
+        undefined   -> Process();
+        ContentType ->
+            if ContentType =:= "application/json" -> Process();
+               true                               ->
+                   send_error(Pid, Uid, invalid_content_type)
+            end
+    end.
+
+%% @doc find a pending request by ID in a list of pending requests
+%% @private
+%% @end
+-spec find_pending(httpc:request_id(), [pending_request()]) ->
+    {pending_request(), [pending_request()]} | not_found.
+find_pending(ID, Pending) -> find_pending(ID, Pending, []).
+
+%% @hidden
+-spec find_pending(httpc:request_id(), [pending_request()],
+                   [pending_request()]) ->
+    {pending_request(), [pending_request()]} | not_found.
+find_pending(_Id, [], _Acc) -> not_found;
+find_pending(ID, [R = {_, _, ID}|Rest], Acc) -> {R, drain(Acc, Rest)};
+find_pending(ID, [H|T], Acc) -> find_pending(ID, T, [H|Acc]).
 
 %% @doc creates a hash used to identify a request
 %% @private
@@ -125,10 +170,10 @@ to_hex(Bin) -> to_hex(Bin, []).
 %% @doc collect the host, target and parameters into a single string
 %% @private
 %% @end
--spec build_url(string(), string(), request_options()) -> iolist().
+-spec build_url(string(), string(), request_options()) -> string().
 build_url(Host, Target, Options) ->
-    io_lib:format("~s/render?target=~s", [Host, Target]) ++
-        lists:map(fun build_qs/1, Options).
+    Head = io_lib:format("~s/render?format=json&target=~s", [Host, Target]),
+    lists:flatten(Head ++ lists:map(fun build_qs/1, Options)).
 
 %% @doc starts a request with the <b>graphite_reader</b> registered host
 %% and returns a pending request, which can later be matched to an
@@ -137,14 +182,32 @@ build_url(Host, Target, Options) ->
 %% @end
 -spec create_request(pid(), uid(), string()) -> pending_request().
 create_request(Callee, Uid, URL) ->
-    HttpOpts =  [{auto_redirect, false}],
     Opts = [{sync, false}],
-    {ok, RequestID} = httpc:request(get, {URL, []}, HttpOpts, Opts),
+    {ok, RequestID} = httpc:request(get, {URL, []}, [], Opts),
     {Callee, Uid, RequestID}.
 
 %%====================================================================
 %% Helper Functions
 %%====================================================================
+
+%% @hidden
+-spec process_response(pid(), uid(), integer(), httpc_body()) -> any().
+process_response(Pid, Uid, Code, _Body) when Code < 200 orelse Code > 299 ->
+    send_error(Pid, Uid, server_error);
+process_response(Pid, Uid, _Code, Body) ->
+    try
+        send_success(Pid, Uid, jiffy:decode(Body))
+    catch
+        {error, {_, invalid_json}} -> send_error(Pid, Uid, invalid_json)
+    end.
+
+%% @hidden
+-spec send_error(pid(), uid(), any()) -> any().
+send_error(Pid, Uid, Error) -> Pid ! {graphite, {error, Uid, Error}}.
+
+%% @hidden
+-spec send_success(pid(), uid(), any()) -> any().
+send_success(Pid, Uid, Msg) -> Pid ! {graphite, {ok, Uid, Msg}}.
 
 %% @hidden
 -spec to_hex(binary(), string()) -> string().
@@ -161,3 +224,10 @@ hex_char(C) -> C - 10 + $a.
 -spec build_qs(request_option()) -> iolist().
 build_qs({from, Time})-> io_lib:format("&from=~s", [Time]);
 build_qs({until, Time}) -> io_lib:format("&target=~s", [Time]).
+
+%% @doc adds the first list to <b>Target</b> without preserving order
+%% @private
+%% @end
+-spec drain(list(), list()) -> list().
+drain([], Target) -> Target;
+drain([H|T], Target) -> drain(T, [H|Target]).
