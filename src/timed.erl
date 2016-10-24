@@ -28,17 +28,16 @@
 
 -record(callback, {timeout   :: pos_integer(),
                    current   :: pos_integer(),
-                   exclusion :: {{pos_integer(), pos_integer()},
-                                 {pos_integer(), pos_integer()}
-                                } | none,
+                   exclusion :: exclusion(),
                    function  :: callback_fn()
                   }).
 -type callback() :: #callback{}.
 
 -type exclusion() :: {{pos_integer(), pos_integer()},
-                      {pos_integer(), pos_integer()}}.
+                      {pos_integer(), pos_integer()}} | none.
 
 -record(state, {callbacks :: [callback()]}).
+-type state() :: #state{}.
 
 %%====================================================================
 %% API
@@ -108,6 +107,7 @@ handle_info(timeout, State) ->
 %% exclusionary period)
 %% @private
 %% @end
+-spec update_and_run(state()) -> state().
 update_and_run(S=#state{callbacks=Callbacks}) ->
     Updated = lists:map(fun process_callback/1, Callbacks),
     S#state{callbacks=Updated}.
@@ -116,6 +116,7 @@ update_and_run(S=#state{callbacks=Callbacks}) ->
 %% function <b>Fn</b> with argument <b>C</b>.
 %% @private
 %% @end
+-spec within_exclusion(exclusion(), fun((A) -> B), A) -> B.
 within_exclusion(none,                 Fn, C) -> Fn(C);
 within_exclusion({{SH, SM}, {EH, EM}}, Fn, C) ->
     {_Date, {H, M, _S}} = erlang:localtime(),
@@ -130,12 +131,13 @@ within_exclusion({{SH, SM}, {EH, EM}}, Fn, C) ->
 %% than a minute
 %% @private
 %% @end
-callback_tick(C=#callback{timeout=TO, current=C, function=Fn}) ->
-    case C- 1 of
+-spec callback_tick(callback()) -> callback().
+callback_tick(CB=#callback{timeout=TO, current=C, function=Fn}) ->
+    case C - 1 of
         0  ->
             Fn(),
-            C#callback{current=TO};
-        CT -> C#callback{current=CT}
+            CB#callback{current=TO};
+        CT -> CB#callback{current=CT}
     end.
 
 %%====================================================================
@@ -143,11 +145,15 @@ callback_tick(C=#callback{timeout=TO, current=C, function=Fn}) ->
 %%====================================================================
 
 %% @hidden
+-spec process_callback(callback()) -> callback().
 process_callback(C=#callback{exclusion=E}) ->
     within_exclusion(E, fun callback_tick/1, C).
 
 %% Checks if the time falls outside start and end hours
 %% @hidden
+-spec within_hours(non_neg_integer(), non_neg_integer(), non_neg_integer(),
+                   non_neg_integer(), non_neg_integer(), non_neg_integer())
+    -> boolean().
 within_hours(SH, SM, EH, EM, H, M) ->
     if H =:= SH              -> M < SM;
        H =:= EH              -> M > EM;
@@ -157,6 +163,7 @@ within_hours(SH, SM, EH, EM, H, M) ->
 
 %% Returns the amount of seconds to the next minute
 %% @hidden
+-spec calculate_timeout() -> non_neg_integer().
 calculate_timeout() ->
     {_Date, {_Hour, _Min, Sec}} = erlang:localtime(),
     Sec * 1000.
