@@ -34,7 +34,8 @@
 -type pending_request() :: {pid(), uid(), httpc:request_id()}.
 -type uid() :: [hex()].
 -type request_option() :: {from, string()}
-                        | {until, string()}.
+                        | {until, string()}
+                        | {reply_to, pid()}.
 -type request_options() :: [request_option()].
 -type reply() :: ok.
 -type request_id() :: string().
@@ -71,11 +72,19 @@ request(Pid, Target) -> request(Pid, Target, []).
 
 -spec request(pid(), string(), request_options()) -> uid().
 request(Pid, Target, Options) ->
+    Reply = case proplists:lookup(reply_to, Options) of
+                {reply_to, P} -> P;
+                none          -> self()
+            end,
+    Filter = fun({reply_to, _}) -> false;
+                (_)             -> true
+             end,
     case process_info(Pid) of
         undefined -> throw({no_such_process, Pid});
         _         ->
             Uid = uid(),
-            gen_server:cast(Pid, {request, self(), Uid, Target, Options}),
+            gen_server:cast(Pid, {request, Reply, Uid, Target,
+                                  lists:filter(Filter, Options)}),
             Uid
     end.
 
@@ -190,13 +199,19 @@ create_request(Callee, Uid, URL) ->
 %% Helper Functions
 %%====================================================================
 
+%% flatten the default jiffy form for graphite replies
+%% @hidden
+-spec flatten({[any()]}) -> [any()].
+flatten({L}) -> L.
+
 %% @hidden
 -spec process_response(pid(), uid(), integer(), httpc_body()) -> any().
-process_response(Pid, Uid, Code, _Body) when Code < 200 orelse Code > 299 ->
+process_response(Pid, Uid, Code, Body) when Code < 200 orelse Code > 299 ->
+    lager:warning("graphite-web error<~w>: ~s", [Code, Body]),
     send_error(Pid, Uid, server_error);
 process_response(Pid, Uid, _Code, Body) ->
     try
-        send_success(Pid, Uid, jiffy:decode(Body))
+        send_success(Pid, Uid, lists:map(fun flatten/1, jiffy:decode(Body)))
     catch
         {error, {_, invalid_json}} -> send_error(Pid, Uid, invalid_json)
     end.
@@ -225,7 +240,7 @@ hex_char(C) -> C - 10 + $a.
 build_qs({from, Time})-> io_lib:format("&from=~s", [Time]);
 build_qs({until, Time}) -> io_lib:format("&target=~s", [Time]).
 
-%% @doc adds the first list to <b>Target</b> without preserving order
+%% @doc prepends the first list to <b>Target</b> without preserving order
 %% @private
 %% @end
 -spec drain(list(), list()) -> list().

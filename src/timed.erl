@@ -84,7 +84,7 @@ code_change(_OldVsn, State, _Extras) -> {ok, State}.
 %% @hidden
 handle_call({add, CB}, _From, State) ->
     NewState = State#state{callbacks=[CB|State#state.callbacks]},
-    {noreply, NewState, calculate_timeout()}.
+    {reply, ok, NewState, calculate_timeout()}.
 
 %% @hidden
 handle_cast(_Message, State) ->
@@ -166,4 +166,4 @@ within_hours(SH, SM, EH, EM, H, M) ->
 -spec calculate_timeout() -> non_neg_integer().
 calculate_timeout() ->
     {_Date, {_Hour, _Min, Sec}} = erlang:localtime(),
-    Sec * 1000.
+    (60 - Sec) * 1000.
